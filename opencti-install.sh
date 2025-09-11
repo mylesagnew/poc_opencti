@@ -45,8 +45,8 @@ check_ubuntu_version() {
     UBUNTU_VERSION=$(lsb_release -rs)
     log "Detected Ubuntu version: $UBUNTU_VERSION"
     
-    if [[ ! "$UBUNTU_VERSION" =~ ^(20\.04|22\.04|23\.04|23\.10)$ ]]; then
-        warning "This script is tested on Ubuntu 20.04, 22.04, 23.04, and 23.10. You're running $UBUNTU_VERSION."
+    if [[ ! "$UBUNTU_VERSION" =~ ^(20\.04|22\.04|23\.04|23\.10|24\.04)$ ]]; then
+        warning "This script is tested on Ubuntu 20.04, 22.04, 23.04, 23.10, and 24.04. You're running $UBUNTU_VERSION."
         read -p "Continue anyway? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -150,6 +150,22 @@ install_docker_compose() {
     success "Docker Compose installed successfully"
 }
 
+# Fix Docker permissions
+fix_docker_permissions() {
+    log "Fixing Docker permissions..."
+    
+    # Add user to docker group if not already
+    if ! groups $USER | grep -q docker; then
+        sudo usermod -aG docker $USER
+        log "User added to docker group. You may need to log out and back in for changes to take effect."
+    fi
+    
+    # Restart Docker service
+    sudo systemctl restart docker
+    
+    success "Docker permissions fixed"
+}
+
 # Create OpenCTI directory and files
 setup_opencti() {
     log "Setting up OpenCTI deployment..."
@@ -192,10 +208,8 @@ SMTP_HOSTNAME=localhost
 CONNECTOR_EXPORT_FILE_STIX_ID=${CONNECTOR_EXPORT_FILE_STIX_ID}
 EOF
 
-    # Create docker-compose.yml
+    # Create docker-compose.yml (without version attribute)
     cat > docker-compose.yml << 'EOF'
-version: '3.8'
-
 services:
   # Redis for caching
   redis:
@@ -412,75 +426,4 @@ create_management_script() {
     cat > ~/opencti-manage.sh << 'EOF'
 #!/bin/bash
 
-# OpenCTI Management Script
-cd ~/opencti-deployment
-
-# Determine which docker compose command to use
-if command -v docker-compose &> /dev/null; then
-    DOCKER_COMPOSE="docker-compose"
-elif docker compose version &> /dev/null; then
-    DOCKER_COMPOSE="docker compose"
-else
-    echo "Error: Docker Compose not found"
-    exit 1
-fi
-
-case "$1" in
-    start)
-        echo "Starting OpenCTI..."
-        $DOCKER_COMPOSE up -d
-        ;;
-    stop)
-        echo "Stopping OpenCTI..."
-        $DOCKER_COMPOSE down
-        ;;
-    restart)
-        echo "Restarting OpenCTI..."
-        $DOCKER_COMPOSE down
-        $DOCKER_COMPOSE up -d
-        ;;
-    logs)
-        $DOCKER_COMPOSE logs -f
-        ;;
-    status)
-        $DOCKER_COMPOSE ps
-        ;;
-    update)
-        echo "Updating OpenCTI..."
-        $DOCKER_COMPOSE down
-        $DOCKER_COMPOSE pull
-        $DOCKER_COMPOSE up -d
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|logs|status|update}"
-        exit 1
-        ;;
-esac
-EOF
-
-    chmod +x ~/opencti-manage.sh
-    success "Management script created at ~/opencti-manage.sh"
-}
-
-# Main installation function
-main() {
-    log "Starting OpenCTI installation on Ubuntu..."
-    
-    check_ubuntu_version
-    update_system
-    install_prerequisites
-    install_docker
-    verify_docker
-    install_docker_compose
-    setup_opencti
-    start_opencti
-    wait_for_opencti
-    create_management_script
-    show_connection_info
-    
-    success "OpenCTI installation completed successfully!"
-    log "Please save your credentials and consider securing your installation with HTTPS"
-}
-
-# Run main function
-main "$@"
+#
