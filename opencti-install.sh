@@ -426,4 +426,77 @@ create_management_script() {
     cat > ~/opencti-manage.sh << 'EOF'
 #!/bin/bash
 
-#
+# OpenCTI Management Script
+cd ~/opencti-deployment
+
+# Determine which docker compose command to use
+if command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+elif docker compose version &> /dev/null; then
+    DOCKER_COMPOSE="docker compose"
+else
+    echo "Error: Docker Compose not found"
+    exit 1
+fi
+
+case "$1" in
+    start)
+        echo "Starting OpenCTI..."
+        $DOCKER_COMPOSE up -d
+        ;;
+    stop)
+        echo "Stopping OpenCTI..."
+        $DOCKER_COMPOSE down
+        ;;
+    restart)
+        echo "Restarting OpenCTI..."
+        $DOCKER_COMPOSE down
+        $DOCKER_COMPOSE up -d
+        ;;
+    logs)
+        $DOCKER_COMPOSE logs -f
+        ;;
+    status)
+        $DOCKER_COMPOSE ps
+        ;;
+    update)
+        echo "Updating OpenCTI..."
+        $DOCKER_COMPOSE down
+        $DOCKER_COMPOSE pull
+        $DOCKER_COMPOSE up -d
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|logs|status|update}"
+        exit 1
+        ;;
+esac
+EOF
+
+    chmod +x ~/opencti-manage.sh
+    success "Management script created at ~/opencti-manage.sh"
+}
+
+# Main installation function
+main() {
+    log "Starting OpenCTI installation on Ubuntu..."
+    
+    check_ubuntu_version
+    update_system
+    install_prerequisites
+    install_docker
+    verify_docker
+    install_docker_compose
+    fix_docker_permissions
+    setup_opencti
+    start_opencti
+    wait_for_opencti
+    create_management_script
+    show_connection_info
+    
+    success "OpenCTI installation completed successfully!"
+    log "Please save your credentials and consider securing your installation with HTTPS"
+    log "You may need to log out and back in for Docker permissions to take effect"
+}
+
+# Run main function
+main "$@"
