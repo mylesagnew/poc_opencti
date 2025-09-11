@@ -202,14 +202,14 @@ services:
     image: redis:7.0
     restart: unless-stopped
     volumes:
-      - redis_/data
+      - redis_data:/data
 
   # Elasticsearch for indexing
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
     restart: unless-stopped
     volumes:
-      - es_/usr/share/elasticsearch/data
+      - es_data:/usr/share/elasticsearch/data
     environment:
       - discovery.type=single-node
       - xpack.ml.enabled=false
@@ -228,7 +228,7 @@ services:
     image: minio/minio:RELEASE.2023-11-01T18-37-25Z
     restart: unless-stopped
     volumes:
-      - s3_/data
+      - s3_data:/data
     ports:
       - "9000:9000"
     environment:
@@ -244,7 +244,7 @@ services:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
     volumes:
-      - rabbitmq_/var/lib/rabbitmq
+      - rabbitmq_data:/var/lib/rabbitmq
 
   # OpenCTI Platform
   opencti:
@@ -312,9 +312,9 @@ services:
       - CONNECTOR_LOG_LEVEL=info
 
 volumes:
-  es_
-  redis_
-  s3_
+  es_data:
+  redis_data:
+  s3_data:
   rabbitmq_data:
 EOF
 
@@ -328,10 +328,13 @@ start_opencti() {
     cd ~/opencti-deployment
     
     # Pull images
-    docker compose pull
-    
-    # Start services
-    docker compose up -d
+    if command -v docker-compose &> /dev/null; then
+        docker-compose pull
+        docker-compose up -d
+    else
+        docker compose pull
+        docker compose up -d
+    fi
     
     success "OpenCTI services started"
 }
@@ -342,9 +345,16 @@ wait_for_opencti() {
     
     # Wait for OpenCTI service to be healthy
     for i in {1..60}; do
-        if docker compose ps | grep -q "opencti.*Up"; then
-            log "OpenCTI container is running"
-            break
+        if command -v docker-compose &> /dev/null; then
+            if docker-compose ps | grep -q "opencti.*Up"; then
+                log "OpenCTI container is running"
+                break
+            fi
+        else
+            if docker compose ps | grep -q "opencti.*Up"; then
+                log "OpenCTI container is running"
+                break
+            fi
         fi
         log "Waiting for containers to start... ($i/60)"
         sleep 10
@@ -405,31 +415,41 @@ create_management_script() {
 # OpenCTI Management Script
 cd ~/opencti-deployment
 
+# Determine which docker compose command to use
+if command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+elif docker compose version &> /dev/null; then
+    DOCKER_COMPOSE="docker compose"
+else
+    echo "Error: Docker Compose not found"
+    exit 1
+fi
+
 case "$1" in
     start)
         echo "Starting OpenCTI..."
-        docker compose up -d
+        $DOCKER_COMPOSE up -d
         ;;
     stop)
         echo "Stopping OpenCTI..."
-        docker compose down
+        $DOCKER_COMPOSE down
         ;;
     restart)
         echo "Restarting OpenCTI..."
-        docker compose down
-        docker compose up -d
+        $DOCKER_COMPOSE down
+        $DOCKER_COMPOSE up -d
         ;;
     logs)
-        docker compose logs -f
+        $DOCKER_COMPOSE logs -f
         ;;
     status)
-        docker compose ps
+        $DOCKER_COMPOSE ps
         ;;
     update)
         echo "Updating OpenCTI..."
-        docker compose down
-        docker compose pull
-        docker compose up -d
+        $DOCKER_COMPOSE down
+        $DOCKER_COMPOSE pull
+        $DOCKER_COMPOSE up -d
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|logs|status|update}"
