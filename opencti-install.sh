@@ -108,23 +108,88 @@ install_docker() {
     sudo apt update
     sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Add user to docker group
-    sudo usermod -aG docker $USER
-    
-    # Start and enable Docker
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    
     success "Docker installed successfully"
 }
 
-# Verify Docker installation
+# Fix Docker permissions
+fix_docker_permissions() {
+    log "Fixing Docker permissions..."
+    
+    # Add user to docker group if not already
+    if ! groups $USER | grep -q docker; then
+        sudo usermod -aG docker $USER
+        log "User added to docker group."
+    fi
+    
+    # Restart Docker service
+    sudo systemctl restart docker
+    sudo systemctl enable docker
+    
+    success "Docker permissions fixed"
+}
+
+# Configure system for Elasticsearch
+configure_elasticsearch_system() {
+    log "Configuring system for Elasticsearch..."
+    
+    # Increase virtual memory map count
+    if ! grep -q "vm.max_map_count=262144" /etc/sysctl.conf; then
+        echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -w vm.max_map_count=262144
+        log "Increased vm.max_map_count to 262144"
+    fi
+    
+    # Set ulimits
+    if ! grep -q "* soft nofile 65536" /etc/security/limits.conf; then
+        echo "* soft nofile 65536" | sudo tee -a /etc/security/limits.conf
+        echo "* hard nofile 65536" | sudo tee -a /etc/security/limits.conf
+        log "Set ulimits for file descriptors"
+    fi
+    
+    success "System configured for Elasticsearch"
+}
+
+# Verify Docker installation and permissions
 verify_docker() {
-    log "Verifying Docker installation..."
+    log "Verifying Docker installation and permissions..."
+    
+    # Wait a moment for Docker to start
+    sleep 5
+    
+    # Try to run Docker command
     if ! docker --version; then
         error "Docker installation failed"
         exit 1
     fi
+    
+    # Test Docker access by running a simple container
+    if ! docker run --rm hello-world &>/dev/null; then
+        error "Docker permission test failed."
+        echo
+        echo "Please perform one of the following actions:"
+        echo "1. Log out and log back in to refresh group permissions"
+        echo "2. Run this command and then re-run the script:"
+        echo "   newgrp docker"
+        echo "3. Or run this command now and continue:"
+        echo "   sudo usermod -aG docker \$USER && sudo systemctl restart docker"
+        echo
+        read -p "Would you like me to try to fix permissions automatically? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            sudo usermod -aG docker $USER
+            sudo systemctl restart docker
+            sleep 3
+            if ! docker run --rm hello-world &>/dev/null; then
+                error "Automatic permission fix failed. Please log out and back in, then re-run the script."
+                exit 1
+            fi
+            success "Docker permissions fixed automatically!"
+        else
+            error "Please fix Docker permissions and re-run the script."
+            exit 1
+        fi
+    fi
+    
     success "Docker is working correctly"
 }
 
@@ -148,22 +213,6 @@ install_docker_compose() {
     fi
     
     success "Docker Compose installed successfully"
-}
-
-# Fix Docker permissions
-fix_docker_permissions() {
-    log "Fixing Docker permissions..."
-    
-    # Add user to docker group if not already
-    if ! groups $USER | grep -q docker; then
-        sudo usermod -aG docker $USER
-        log "User added to docker group. You may need to log out and back in for changes to take effect."
-    fi
-    
-    # Restart Docker service
-    sudo systemctl restart docker
-    
-    success "Docker permissions fixed"
 }
 
 # Create OpenCTI directory and files
@@ -217,6 +266,11 @@ services:
     restart: unless-stopped
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   # Elasticsearch for indexing
   elasticsearch:
@@ -227,7 +281,9 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.ml.enabled=false
-      - logger.level=ERROR
+      - xpack.security.enabled=false
+      - logger.level=WARN
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
     ulimits:
       memlock:
         soft: -1
@@ -235,7 +291,12 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    mem_limit: 4g
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   # MinIO for file storage
   minio:
@@ -249,6 +310,11 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     command: server /data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
   # RabbitMQ for message queuing
   rabbitmq:
@@ -259,16 +325,25 @@ services:
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   # OpenCTI Platform
   opencti:
     image: opencti/platform:5.12.15
     restart: unless-stopped
     depends_on:
-      - redis
-      - elasticsearch
-      - minio
-      - rabbitmq
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
@@ -295,13 +370,19 @@ services:
       - SMTP__HOSTNAME=${SMTP_HOSTNAME}
       - SMTP__PORT=25
       - PROVIDERS__LOCAL__STRATEGY=LocalStrategy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   # OpenCTI Workers
   worker:
     image: opencti/worker:5.12.15
     restart: unless-stopped
     depends_on:
-      - opencti
+      opencti:
+        condition: service_started
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -314,7 +395,8 @@ services:
     image: opencti/connector-export-file-stix:5.12.15
     restart: unless-stopped
     depends_on:
-      - opencti
+      opencti:
+        condition: service_started
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -335,11 +417,33 @@ EOF
     success "OpenCTI setup completed"
 }
 
+# Test Docker permissions before starting services
+test_docker_permissions() {
+    log "Testing Docker permissions before starting services..."
+    
+    if ! docker info &>/dev/null; then
+        error "Docker permission denied."
+        echo
+        echo "Please perform one of the following actions:"
+        echo "1. Log out and log back in to refresh group permissions"
+        echo "2. Run: newgrp docker"
+        echo "3. Run: sudo usermod -aG docker \$USER && sudo systemctl restart docker"
+        echo
+        error "After fixing permissions, re-run the script or use the management script."
+        exit 1
+    fi
+    
+    success "Docker permissions confirmed"
+}
+
 # Start OpenCTI services
 start_opencti() {
     log "Starting OpenCTI services..."
     
     cd ~/opencti-deployment
+    
+    # Test Docker permissions before proceeding
+    test_docker_permissions
     
     # Pull images
     if command -v docker-compose &> /dev/null; then
@@ -355,22 +459,24 @@ start_opencti() {
 
 # Wait for OpenCTI to be ready
 wait_for_opencti() {
-    log "Waiting for OpenCTI to be ready (this may take 5-10 minutes)..."
+    log "Waiting for OpenCTI to be ready (this may take 10-15 minutes)..."
     
-    # Wait for OpenCTI service to be healthy
-    for i in {1..60}; do
+    # Wait for services to be healthy
+    for i in {1..90}; do
         if command -v docker-compose &> /dev/null; then
-            if docker-compose ps | grep -q "opencti.*Up"; then
-                log "OpenCTI container is running"
-                break
-            fi
+            HEALTHY_SERVICES=$(docker-compose ps | grep -c "(healthy)" || true)
+            TOTAL_SERVICES=$(docker-compose ps | grep -c "Up" || true)
         else
-            if docker compose ps | grep -q "opencti.*Up"; then
-                log "OpenCTI container is running"
-                break
-            fi
+            HEALTHY_SERVICES=$(docker compose ps | grep -c "(healthy)" || true)
+            TOTAL_SERVICES=$(docker compose ps | grep -c "Up" || true)
         fi
-        log "Waiting for containers to start... ($i/60)"
+        
+        if [ "$HEALTHY_SERVICES" -ge 4 ]; then
+            log "Core services are healthy"
+            break
+        fi
+        
+        log "Waiting for services to be healthy... ($i/90) - Healthy: $HEALTHY_SERVICES/$TOTAL_SERVICES"
         sleep 10
     done
     
@@ -419,6 +525,12 @@ show_connection_info() {
     echo "Start services: docker compose up -d"
     echo "========================================================"
     echo
+    echo "=================== TROUBLESHOOTING ===================="
+    echo "If services keep restarting, check logs:"
+    echo "docker compose logs opencti"
+    echo "docker compose logs worker"
+    echo "========================================================"
+    echo
 }
 
 # Create management script
@@ -436,6 +548,16 @@ elif docker compose version &> /dev/null; then
     DOCKER_COMPOSE="docker compose"
 else
     echo "Error: Docker Compose not found"
+    exit 1
+fi
+
+# Test Docker permissions
+if ! docker info &>/dev/null; then
+    echo "Error: Docker permission denied."
+    echo "Please run one of the following:"
+    echo "1. Log out and back in"
+    echo "2. Run: newgrp docker"
+    echo "3. Run: sudo usermod -aG docker \$USER && sudo systemctl restart docker"
     exit 1
 fi
 
@@ -484,9 +606,10 @@ main() {
     update_system
     install_prerequisites
     install_docker
+    fix_docker_permissions
+    configure_elasticsearch_system
     verify_docker
     install_docker_compose
-    fix_docker_permissions
     setup_opencti
     start_opencti
     wait_for_opencti
@@ -495,7 +618,6 @@ main() {
     
     success "OpenCTI installation completed successfully!"
     log "Please save your credentials and consider securing your installation with HTTPS"
-    log "You may need to log out and back in for Docker permissions to take effect"
 }
 
 # Run main function
