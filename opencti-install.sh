@@ -140,7 +140,7 @@ configure_elasticsearch_system() {
     fi
     
     # Set ulimits
-    if ! grep -q "* soft nofile 65536" /etc/security/limits.conf; then
+    if ! grep -qF "* soft nofile 65536" /etc/security/limits.conf; then
         echo "* soft nofile 65536" | sudo tee -a /etc/security/limits.conf
         echo "* hard nofile 65536" | sudo tee -a /etc/security/limits.conf
         log "Set ulimits for file descriptors"
@@ -256,6 +256,8 @@ SMTP_HOSTNAME=localhost
 # Connector IDs
 CONNECTOR_EXPORT_FILE_STIX_ID=${CONNECTOR_EXPORT_FILE_STIX_ID}
 EOF
+    # Generated secrets: owner read/write only
+    chmod 600 .env
 
     # Create docker-compose.yml (without version attribute)
     cat > docker-compose.yml << 'EOF'
@@ -304,8 +306,10 @@ services:
     restart: unless-stopped
     volumes:
       - s3_data:/data
+    # Bound to localhost: OpenCTI reaches MinIO over the Compose network, so
+    # the S3 API does not need to be reachable from other hosts.
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
