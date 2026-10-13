@@ -1,0 +1,9 @@
+# Generated secrets — never commit
+.env
+opencti-deployment/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
